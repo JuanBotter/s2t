@@ -3,7 +3,7 @@ Description=Toggle dictation (record -> transcribe -> paste)
 
 [Service]
 Type=oneshot
-ExecStart=/home/juan/projects/s2t/bin/s2t
+ExecStart=/home/juan/projects/s2t/linux/bin/s2t
 # Allow the background recorder to survive after this oneshot exits.
 # The second invocation will stop it.
 KillMode=process

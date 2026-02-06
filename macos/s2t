@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# macOS dictation toggle: run once to start recording, run again to stop,
+# transcribe with Whisper, and paste into the focused app.
+
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/Library/Caches}/s2t"
+STATE_FILE="$STATE_DIR/state"
+TMP_DIR="${S2T_TMP_DIR:-${TMPDIR:-/tmp}/s2t}"
+mkdir -p "$STATE_DIR" "$TMP_DIR"
+
+S2T_MODEL="${S2T_MODEL:-base}"
+S2T_LANG="${S2T_LANG:-}"
+S2T_CPP_MODEL="${S2T_CPP_MODEL:-}"
+S2T_AVFOUNDATION_INPUT="${S2T_AVFOUNDATION_INPUT:-:0}"
+S2T_MAX_SECONDS="${S2T_MAX_SECONDS:-300}"
+S2T_CLIPBOARD="${S2T_CLIPBOARD:-clipboard}"
+S2T_CLIPBOARD_RESTORE_DELAY="${S2T_CLIPBOARD_RESTORE_DELAY:-0.15}"
+S2T_NOTIFY_SUMMARY="${S2T_NOTIFY_SUMMARY:-s2t}"
+S2T_NOTIFY_BODY="${S2T_NOTIFY_BODY:-Recording... (run again to stop)}"
+S2T_NOTIFY_STACK_TAG="${S2T_NOTIFY_STACK_TAG:-s2t}"
+
+log() { printf 's2t: %s\n' "$*" >&2; }
+die() { log "$*"; exit 1; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+notify_start() {
+  if have terminal-notifier; then
+    terminal-notifier -group "$S2T_NOTIFY_STACK_TAG" -title "$S2T_NOTIFY_SUMMARY" \
+      -message "$S2T_NOTIFY_BODY" >/dev/null 2>&1 || true
+  elif have osascript; then
+    osascript -e "display notification \"$S2T_NOTIFY_BODY\" with title \"$S2T_NOTIFY_SUMMARY\"" \
+      >/dev/null 2>&1 || true
+  fi
+}
+
+notify_end() {
+  if have terminal-notifier; then
+    terminal-notifier -remove "$S2T_NOTIFY_STACK_TAG" >/dev/null 2>&1 || true
+  fi
+}
+
+start_record() {
+  local wav="$1"
+  have ffmpeg || die "ffmpeg is required (brew install ffmpeg)"
+
+  ffmpeg -y -f avfoundation -i "$S2T_AVFOUNDATION_INPUT" -ac 1 -ar 16000 "$wav" \
+    >/dev/null 2>&1 &
+  local rec_pid=$!
+
+  local timer_pid=""
+  if [[ "$S2T_MAX_SECONDS" =~ ^[0-9]+$ ]] && (( S2T_MAX_SECONDS > 0 )); then
+    (
+      sleep "$S2T_MAX_SECONDS"
+      kill -INT "$rec_pid" 2>/dev/null || true
+    ) &
+    timer_pid=$!
+  fi
+
+  echo "$rec_pid" > "$STATE_FILE"
+  printf '%s\n' "$wav" >> "$STATE_FILE"
+  printf '%s\n' "$timer_pid" >> "$STATE_FILE"
+  notify_start
+}
+
+stop_record() {
+  local pid="$1"
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -INT "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+}
+
+transcribe_whisper_py() {
+  local wav="$1"
+  local outdir="$TMP_DIR/whisper-$(date +%s)"
+  mkdir -p "$outdir"
+  local args=("$wav" --model "$S2T_MODEL" --output_format txt --output_dir "$outdir")
+  if [[ -n "$S2T_LANG" ]]; then
+    args+=(--language "$S2T_LANG")
+  fi
+  whisper "${args[@]}" >/dev/null 2>&1
+  local txt="$outdir/$(basename "${wav%.*}").txt"
+  [[ -f "$txt" ]] || die "whisper output missing: $txt"
+  cat "$txt"
+}
+
+transcribe_whisper_cpp() {
+  local wav="$1"
+  [[ -n "$S2T_CPP_MODEL" ]] || die "S2T_CPP_MODEL must be set for whisper.cpp"
+  [[ -f "$S2T_CPP_MODEL" ]] || die "S2T_CPP_MODEL not found: $S2T_CPP_MODEL"
+  local stamp
+  stamp="$(date +%s)"
+  local outprefix="$TMP_DIR/whispercpp-$stamp"
+  local logfile="$TMP_DIR/whispercpp-$stamp.log"
+  local args=(-m "$S2T_CPP_MODEL" -f "$wav" -otxt -of "$outprefix")
+  if [[ -n "$S2T_LANG" ]]; then
+    args+=(-l "$S2T_LANG")
+  fi
+  if have whisper-cli; then
+    whisper-cli "${args[@]}" >"$logfile" 2>&1 || {
+      tail -n 50 "$logfile" >&2 || true
+      die "whisper.cpp failed (see log above)"
+    }
+  else
+    main "${args[@]}" >"$logfile" 2>&1 || {
+      tail -n 50 "$logfile" >&2 || true
+      die "whisper.cpp failed (see log above)"
+    }
+  fi
+  local txt="${outprefix}.txt"
+  [[ -f "$txt" ]] || {
+    tail -n 50 "$logfile" >&2 || true
+    die "whisper.cpp output missing: $txt"
+  }
+  rm -f "$logfile" >/dev/null 2>&1 || true
+  cat "$txt"
+}
+
+transcribe() {
+  local wav="$1"
+  if have whisper; then
+    transcribe_whisper_py "$wav"
+  elif have whisper-cli || have main; then
+    transcribe_whisper_cpp "$wav"
+  else
+    die "no whisper CLI found (install whisper.cpp or openai-whisper)"
+  fi
+}
+
+paste_text() {
+  local text="$1"
+  have pbcopy || die "pbcopy not found"
+  local savefile=""
+  local saved=0
+  if [[ "$S2T_CLIPBOARD" == "preserve" ]]; then
+    savefile="$TMP_DIR/clip-$$"
+    pbpaste >"$savefile" 2>/dev/null || true
+    saved=1
+  fi
+
+  printf '%s' "$text" | pbcopy
+  if have osascript; then
+    osascript -e 'tell application "System Events" to keystroke "v" using command down' \
+      >/dev/null 2>&1 || true
+  fi
+
+  if (( saved )); then
+    sleep "$S2T_CLIPBOARD_RESTORE_DELAY"
+    pbcopy <"$savefile" 2>/dev/null || true
+    rm -f "$savefile" || true
+  fi
+}
+
+if [[ -f "$STATE_FILE" ]]; then
+  read -r pid < "$STATE_FILE" || true
+  read -r wav < <(sed -n '2p' "$STATE_FILE") || true
+  read -r timer < <(sed -n '3p' "$STATE_FILE") || true
+
+  if [[ -n "${timer:-}" ]]; then
+    kill "$timer" 2>/dev/null || true
+    wait "$timer" 2>/dev/null || true
+  fi
+  if [[ -n "${pid:-}" ]]; then
+    stop_record "$pid"
+  fi
+  notify_end
+  rm -f "$STATE_FILE"
+
+  if [[ -z "${wav:-}" || ! -f "$wav" ]]; then
+    die "recording file missing"
+  fi
+  if [[ ! -s "$wav" ]]; then
+    die "recording file is empty"
+  fi
+
+  text="$(transcribe "$wav")"
+  check="$(printf '%s' "$text" | tr -d '[:space:]')"
+  if [[ -z "$check" ]]; then
+    exit 0
+  fi
+  paste_text "$text"
+  exit 0
+fi
+
+wav="$TMP_DIR/rec-$(date +%Y%m%d-%H%M%S).wav"
+start_record "$wav"
+log "recording started (run again to stop)"
