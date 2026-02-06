@@ -374,8 +374,14 @@ if [[ -f "$STATE_FILE" ]]; then
 
   text="$(transcribe "$wav")"
   # Skip empty/silence output without altering the text.
-  check="$(printf '%s' "$text" | tr -d '[:space:]')"
+  # Treat whitespace/punctuation-only output as empty.
+  check="$(printf '%s' "$text" | tr -d '[:space:][:punct:]')"
   if [[ -z "$check" ]]; then
+    exit 0
+  fi
+  # Filter whisper.cpp blank-audio token (aggressive).
+  canon="$(printf '%s' "$text" | tr -cd '[:alpha:]' | tr '[:upper:]' '[:lower:]')"
+  if [[ "$canon" == "blankaudio" ]]; then
     exit 0
   fi
   paste_text "$text"

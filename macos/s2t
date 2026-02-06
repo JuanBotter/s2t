@@ -176,8 +176,13 @@ if [[ -f "$STATE_FILE" ]]; then
   fi
 
   text="$(transcribe "$wav")"
-  check="$(printf '%s' "$text" | tr -d '[:space:]')"
+  check="$(printf '%s' "$text" | tr -d '[:space:][:punct:]')"
   if [[ -z "$check" ]]; then
+    exit 0
+  fi
+  # Filter whisper.cpp blank-audio token (aggressive).
+  canon="$(printf '%s' "$text" | tr -cd '[:alpha:]' | tr '[:upper:]' '[:lower:]')"
+  if [[ "$canon" == "blankaudio" ]]; then
     exit 0
   fi
   paste_text "$text"
