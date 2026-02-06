@@ -1,0 +1,14 @@
+[Unit]
+Description=Toggle dictation (record -> transcribe -> paste)
+
+[Service]
+Type=oneshot
+ExecStart=/home/juan/projects/s2t/bin/s2t
+# Allow the background recorder to survive after this oneshot exits.
+# The second invocation will stop it.
+KillMode=process
+# If your user systemd does not inherit DISPLAY/XAUTHORITY,
+# set them in an override or import environment in your X session.
+
+[Install]
+WantedBy=default.target
