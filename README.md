@@ -1,4 +1,4 @@
-# s2t (dictation toggle)
+# s2t (Speech 2 Text)
 
 `s2t` is a lightweight, toggle-style dictation utility. Run it once to start recording, run it again to stop, transcribe with Whisper, and paste into the focused application.
 
