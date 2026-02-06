@@ -52,7 +52,14 @@ export S2T_AVFOUNDATION_INPUT=":0"
 ## Put the script on PATH
 
 ```bash
+mkdir -p ~/bin
 ln -sf /path/to/s2t/macos/s2t ~/bin/s2t
+```
+
+Ensure `~/bin` is on your PATH (add to `~/.zshrc` if needed):
+
+```bash
+export PATH="$HOME/bin:$PATH"
 ```
 
 ## Permissions

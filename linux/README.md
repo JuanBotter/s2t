@@ -111,7 +111,7 @@ Install the unit and reload systemd:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-ln -sf /home/juan/projects/s2t/linux/systemd/user/s2t.service ~/.config/systemd/user/s2t.service
+ln -sf "$(pwd)"/linux/systemd/user/s2t.service ~/.config/systemd/user/s2t.service
 systemctl --user daemon-reload
 ```
 
